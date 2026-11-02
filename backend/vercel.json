@@ -24,10 +24,6 @@
       "dest": "/api/test.js"
     },
     {
-      "src": "/api/socketio",
-      "dest": "/api/socketio.js"
-    },
-    {
       "src": "/api/(.*)",
       "dest": "/api/index.js"
     },

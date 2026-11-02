@@ -1,6 +1,3 @@
-// Import game handler
-import gameHandler from './game.js';
-
 // Simple Vercel-compatible backend entry point
 export default async function handler(req, res) {
   // Set CORS headers
@@ -39,19 +36,9 @@ export default async function handler(req, res) {
       endpoints: [
         'GET /health - Health check',
         'GET / - API info',
-        'GET|POST /api/game?action=<action> - Game operations'
+        'GET /docs - API documentation'
       ],
-      gameActions: [
-        'getRooms - Get available game rooms',
-        'createRoom - Create a new game room',
-        'joinRoom - Join an existing room',
-        'leaveRoom - Leave current room', 
-        'placeShips - Place ships on board',
-        'attack - Make an attack',
-        'getGameState - Get current game state',
-        'sendMessage - Send chat message'
-      ],
-      note: 'This is a serverless function running on Vercel. Socket.IO has been replaced with REST API + Supabase Realtime for better serverless compatibility.'
+      note: 'Gameplay is served by the persistent Socket.IO backend.'
     });
   }
 
@@ -64,24 +51,11 @@ export default async function handler(req, res) {
       endpoints: {
         'GET /': 'API information',
         'GET /health': 'Health check',
-        'GET /docs': 'API documentation',
-        'GET /api/game?action=getRooms': 'Get available game rooms',
-        'POST /api/game?action=createRoom': 'Create a new game room',
-        'POST /api/game?action=joinRoom': 'Join an existing room',
-        'POST /api/game?action=leaveRoom': 'Leave current room',
-        'POST /api/game?action=placeShips': 'Place ships on board',
-        'POST /api/game?action=attack': 'Make an attack',
-        'GET /api/game?action=getGameState': 'Get current game state',
-        'POST /api/game?action=sendMessage': 'Send chat message'
+        'GET /docs': 'API documentation'
       },
-      authentication: 'Bearer token required in Authorization header',
+      gameplay: 'Socket.IO backend',
       cors: `Enabled for ${process.env.CORS_ORIGIN || 'http://localhost:5173'}`
     });
-  }
-
-  // Game API endpoint
-  if (url.startsWith('/api/game')) {
-    return await gameHandler(req, res);
   }
 
   // 404 for unknown endpoints
@@ -89,6 +63,6 @@ export default async function handler(req, res) {
     error: 'Endpoint not found',
     url: url,
     method: method,
-    availableEndpoints: ['/', '/health', '/api/health', '/api/game', '/docs']
+    availableEndpoints: ['/', '/health', '/api/health', '/docs']
   });
 }

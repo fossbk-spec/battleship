@@ -2,7 +2,7 @@ import { verifyToken, supabase } from '../config/supabase.js';
 
 /**
  * Socket.IO middleware to authenticate connections
- * Verifies JWT token from handshake auth or query parameters
+ * Verifies JWT token from handshake auth or Authorization header
  */
 export const socketAuthMiddleware = async (socket, next) => {
   try {
@@ -13,12 +13,8 @@ export const socketAuthMiddleware = async (socket, next) => {
     if (socket.handshake.auth && socket.handshake.auth.token) {
       token = socket.handshake.auth.token;
     }
-    // 2. From query parameters (fallback)
-    else if (socket.handshake.query && socket.handshake.query.token) {
-      token = socket.handshake.query.token;
-    }
-    // 3. From headers
-    else if (socket.handshake.headers.authorization) {
+    // 2. From headers
+    else if (socket.handshake.headers?.authorization) {
       const authHeader = socket.handshake.headers.authorization;
       if (authHeader.startsWith('Bearer ')) {
         token = authHeader.substring(7);

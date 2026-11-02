@@ -1,0 +1,3 @@
+Amended the four SDLC docs in place: [SDD](/C:/Antigravity/battleship-game/docs/sdlc/02-SDD.md), [Test Plan](/C:/Antigravity/battleship-game/docs/sdlc/03-TEST-PLAN.md), [Development Plan](/C:/Antigravity/battleship-game/docs/sdlc/04-DEV-PLAN.md), and [Risk Register](/C:/Antigravity/battleship-game/docs/sdlc/05-RISK-REGISTER.md). Each is now Version 1.1, dated 2026-11-02.
+
+They reflect the temporary single Socket.IO engine decision, REST gameplay retirement, required game-completion stats write, power-of-two tournament start rule, and updated risk statuses. Documentation checks passed. No files under `backend/` or `frontend/` were changed; no browser or package installation was used.

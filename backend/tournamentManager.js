@@ -273,18 +273,29 @@ class TournamentManager {
    */
   async recordMatchResult(matchId, winnerId) {
     const match = await this.getMatch(matchId);
+    if (![match.player1_id, match.player2_id].includes(winnerId)) {
+      throw new Error('Winner must be a match participant');
+    }
+    if (match.status === 'completed') {
+      if (match.winner_id !== winnerId) throw new Error('Match already completed with another winner');
+      return { roundComplete: false, alreadyCompleted: true };
+    }
+    if (!['ready', 'in_progress'].includes(match.status)) throw new Error('Match is not ready for completion');
     
     // Update match with winner
-    const { error: updateError } = await supabase
+    const { data: updated, error: updateError } = await supabase
       .from('tournament_matches')
       .update({
         winner_id: winnerId,
         status: 'completed',
         completed_at: new Date().toISOString(),
       })
-      .eq('id', matchId);
+      .eq('id', matchId)
+      .in('status', ['ready', 'in_progress'])
+      .select('id');
 
     if (updateError) throw updateError;
+    if (!updated?.length) return { roundComplete: false, alreadyCompleted: true };
 
     // Update loser as eliminated
     const loserId = match.player1_id === winnerId ? match.player2_id : match.player1_id;

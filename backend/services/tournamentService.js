@@ -119,7 +119,7 @@ class TournamentService {
       throw new Error('Tournament is not accepting registrations');
     }
 
-    if (tournament.current_players >= tournament.max_players) {
+    if (tournament.participants.length >= tournament.max_players) {
       throw new Error('Tournament is full');
     }
 
@@ -228,12 +228,14 @@ class TournamentService {
       throw new Error('Tournament has already started');
     }
 
-    if (tournament.current_players < 2) {
+    const participantCount = tournament.participants.length;
+    if (participantCount < 2) {
       throw new Error('Need at least 2 players to start tournament');
     }
 
-    // Allow any player count >= 2
-    // (Removed power-of-2 validation for flexibility)
+    if (!Number.isInteger(Math.log2(participantCount))) {
+      throw new Error('Tournament requires a power-of-two registered player count');
+    }
 
     const { data, error } = await supabase
       .from('tournaments')
@@ -242,20 +244,17 @@ class TournamentService {
         started_at: new Date().toISOString(),
       })
       .eq('id', tournamentId)
+      .eq('status', 'registration')
       .select()
-      .single();
+      .maybeSingle();
 
     if (error) throw error;
+    if (!data) throw new Error('Tournament has already started');
     
     // Generate bracket after tournament is active
     console.log('🏆 [BACKEND] Starting bracket generation for:', tournamentId);
-    try {
-      await this.generateInitialBracket(tournamentId);
-      console.log('🏆 [BACKEND] Bracket generated successfully');
-    } catch (bracketError) {
-      console.error('🏆 [BACKEND] Error generating bracket:', bracketError);
-      // Don't throw - tournament is already started
-    }
+    await this.generateInitialBracket(tournamentId);
+    console.log('🏆 [BACKEND] Bracket generated successfully');
     
     return data;
   }
@@ -380,13 +379,12 @@ class TournamentService {
     const playerCount = participants?.length || 0;
     console.log(`🏆 [BACKEND] Fetched ${playerCount} participants`);
     
-    if (playerCount < 2) {
-      throw new Error('Need at least 2 players');
+    if (playerCount < 2 || !Number.isInteger(Math.log2(playerCount))) {
+      throw new Error('Tournament requires a power-of-two registered player count');
     }
 
     // Calculate rounds needed
     const roundsNeeded = Math.ceil(Math.log2(playerCount));
-    const nextPowerOf2 = Math.pow(2, roundsNeeded);
     
     console.log(`🏆 [BACKEND] Generating bracket: ${playerCount} players, ${roundsNeeded} rounds`);
 
@@ -407,9 +405,8 @@ class TournamentService {
         match_number: matchNumber,
         bracket_position: `R1-M${matchNumber}`,
         player1_id: player1_id,
-        player2_id: player2_id || null,
-        status: player2_id ? 'pending' : 'ready',
-        winner_id: player2_id ? null : player1_id, // Bye winner
+        player2_id,
+        status: 'ready',
       });
 
       matchNumber++;
@@ -431,6 +428,27 @@ class TournamentService {
 
     // Generate subsequent rounds
     await this.generateSubsequentRounds(tournamentId, roundsNeeded);
+
+    // Link each match to the next round so recordMatchResult can advance winners.
+    const { data: bracketMatches, error: matchesError } = await supabase
+      .from('tournament_matches')
+      .select('id, round, match_number')
+      .eq('tournament_id', tournamentId);
+    if (matchesError) throw matchesError;
+    const bySlot = new Map(bracketMatches.map((match) => [`${match.round}:${match.match_number}`, match.id]));
+    for (const match of bracketMatches) {
+      if (match.round >= roundsNeeded) continue;
+      const nextMatchId = bySlot.get(`${match.round + 1}:${Math.ceil(match.match_number / 2)}`);
+      if (!nextMatchId) throw new Error('Tournament bracket is incomplete');
+      const { error: linkError } = await supabase
+        .from('tournament_matches')
+        .update({
+          next_match_id: nextMatchId,
+          winner_proceeds_to: match.match_number % 2 ? 'player1' : 'player2',
+        })
+        .eq('id', match.id);
+      if (linkError) throw linkError;
+    }
     
     console.log('🏆 [BACKEND] Bracket generation complete!');
   }

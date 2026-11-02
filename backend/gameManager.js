@@ -57,6 +57,8 @@ class GameManager {
    * Create a tournament match room
    */
   createTournamentRoom(player1Id, player1Username, player2Id, player2Username, tournamentId, matchId) {
+    const existing = this.getTournamentRoom(matchId);
+    if (existing) return existing;
     const roomId = this.generateRoomId();
 
     const room = {
@@ -94,6 +96,10 @@ class GameManager {
     this.playerRooms.set(player2Id, roomId);
 
     return room;
+  }
+
+  getTournamentRoom(matchId) {
+    return [...this.rooms.values()].find((room) => room.isTournament && room.matchId === matchId);
   }
 
   /**
@@ -173,7 +179,10 @@ class GameManager {
     }
 
     // Validate ships (5 ships, correct sizes, no overlaps, etc.)
-    if (!this.validateShips(ships)) {
+    if (room.status !== 'setup' || player.ready) {
+      throw new Error('Ship placement is not available');
+    }
+    if (!this.validateShips(ships, board)) {
       throw new Error('Invalid ship placement');
     }
 
@@ -211,6 +220,9 @@ class GameManager {
    * Process an attack
    */
   makeAttack(roomId, attackerId, x, y) {
+    if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || x > 9 || y < 0 || y > 9) {
+      throw new Error('Attack coordinates must be integers from 0 to 9');
+    }
     const room = this.rooms.get(roomId);
 
     if (!room) {
@@ -278,6 +290,7 @@ class GameManager {
           result.winner = attackerId;
           room.status = 'finished';
           room.winner = attackerId;
+          room.endedAt = new Date();
         }
       }
     } else {
@@ -363,15 +376,15 @@ class GameManager {
   /**
    * Validate ship placement
    */
-  validateShips(ships) {
+  validateShips(ships, board) {
     // Must have exactly 5 ships
-    if (ships.length !== 5) {
+    if (!Array.isArray(ships) || ships.length !== 5 || !Array.isArray(board) || board.length !== 10 || !board.every((row) => Array.isArray(row) && row.length === 10)) {
       return false;
     }
 
     // Check each ship has required properties and valid positions
     const expectedSizes = [5, 4, 3, 3, 2]; // Carrier, Battleship, Cruiser, Submarine, Destroyer
-    const sizes = ships.map((s) => s.size).sort((a, b) => b - a);
+    const sizes = ships.map((s) => s?.size).sort((a, b) => b - a);
 
     if (JSON.stringify(sizes) !== JSON.stringify(expectedSizes)) {
       return false;
@@ -381,6 +394,14 @@ class GameManager {
     const occupied = new Set();
 
     for (const ship of ships) {
+      if (!Array.isArray(ship.positions) || ship.positions.length !== ship.size) return false;
+      const positions = ship.positions;
+      if (!positions.every((pos) => pos && Number.isInteger(pos.x) && Number.isInteger(pos.y))) return false;
+      const horizontal = positions.every((pos) => pos.y === positions[0].y);
+      const vertical = positions.every((pos) => pos.x === positions[0].x);
+      if (!horizontal && !vertical) return false;
+      const axis = positions.map((pos) => horizontal ? pos.x : pos.y).sort((a, b) => a - b);
+      if (axis.some((value, index) => index && value !== axis[index - 1] + 1)) return false;
       for (const pos of ship.positions) {
         // Check bounds
         if (pos.x < 0 || pos.x > 9 || pos.y < 0 || pos.y > 9) {
@@ -396,7 +417,10 @@ class GameManager {
       }
     }
 
-    return true;
+    if (occupied.size !== 17) return false;
+    return board.every((row, y) => row.every((cell, x) =>
+      cell === (occupied.has(`${x},${y}`) ? 'ship' : 'empty')
+    ));
   }
 
   /**

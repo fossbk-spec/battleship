@@ -8,6 +8,7 @@ import profileRoutes from './routes/profileRoutes.js';
 import gameManager from './gameManager.js';
 import tournamentService from './services/tournamentService.js';
 import tournamentManager from './tournamentManager.js';
+import { supabase } from './config/supabase.js';
 
 // Load environment variables
 dotenv.config();
@@ -193,7 +194,7 @@ io.on('connection', (socket) => {
   /**
    * Make an attack
    */
-  socket.on('game:attack', ({ roomId, x, y }) => {
+  socket.on('game:attack', async ({ roomId, x, y }) => {
     try {
       const { room, result } = gameManager.makeAttack(
         roomId,
@@ -313,6 +314,17 @@ io.on('connection', (socket) => {
               console.error('Error recording tournament match result:', tournamentError);
             }
           })();
+        } else if (room && room.players.length === 2) {
+          // The deployed games/profiles schema and RPC must be verified before release.
+          // The RPC inserts the result and increments both profiles atomically once per room.
+          const { error: persistenceError } = await supabase.rpc('record_completed_game', {
+            p_completion_key: room.id,
+            p_player1_id: room.players[0].id,
+            p_player2_id: room.players[1].id,
+            p_winner_id: result.winner,
+            p_ended_at: room.endedAt.toISOString(),
+          });
+          if (persistenceError) throw persistenceError;
         }
       }
     } catch (error) {
@@ -325,6 +337,11 @@ io.on('connection', (socket) => {
    */
   socket.on('game:getState', ({ roomId }) => {
     try {
+      const room = gameManager.getRoom(roomId);
+      if (!room) throw new Error('Game not found');
+      if (!room.players.some((player) => player.id === socket.userId)) {
+        throw new Error('Access denied: you are not a player in this game');
+      }
       const gameState = gameManager.getGameStateForPlayer(roomId, socket.userId);
 
       if (!gameState) {
@@ -374,6 +391,10 @@ io.on('connection', (socket) => {
    */
   socket.on('chat:sendMessage', ({ gameId, message }) => {
     try {
+      const room = gameManager.getRoom(gameId);
+      if (!room?.players.some((player) => player.id === socket.userId) || !socket.rooms.has(gameId)) {
+        throw new Error('Access denied: you are not in this game room');
+      }
       // Validate message
       if (!message || typeof message !== 'string' || message.trim().length === 0) {
         socket.emit('error', { message: 'Invalid message' });
@@ -404,6 +425,10 @@ io.on('connection', (socket) => {
    */
   socket.on('chat:typing', ({ gameId, isTyping }) => {
     try {
+      const room = gameManager.getRoom(gameId);
+      if (!room?.players.some((player) => player.id === socket.userId) || !socket.rooms.has(gameId)) {
+        throw new Error('Access denied: you are not in this game room');
+      }
       // Broadcast typing status to room (except sender)
       socket.to(gameId).emit('chat:typing', {
         userId: socket.userId,
@@ -534,13 +559,11 @@ io.on('connection', (socket) => {
   socket.on('tournament:start', async ({ tournamentId }) => {
     try {
       // Update tournament status
-      await tournamentService.startTournament(tournamentId, socket.userId);
-
-      // Generate bracket and create matches
-      const bracket = await tournamentManager.generateBracket(tournamentId);
+      const started = await tournamentService.startTournament(tournamentId, socket.userId);
 
       // Get full tournament details with matches
       const tournament = await tournamentManager.getTournamentState(tournamentId);
+      const bracket = started.bracket_data || tournament.matches;
 
       // Notify all participants that tournament has started
       io.to(`tournament:${tournamentId}`).emit('tournament:started', {
@@ -597,6 +620,10 @@ io.on('connection', (socket) => {
    */
   socket.on('tournament:startMatch', async ({ matchId }) => {
     try {
+      const match = await tournamentManager.getMatch(matchId);
+      if (!match || ![match.player1_id, match.player2_id].includes(socket.userId)) {
+        throw new Error('Access denied: you are not a match participant');
+      }
       const matchData = await tournamentManager.startTournamentMatch(matchId);
       
       // Notify both players
@@ -624,6 +651,14 @@ io.on('connection', (socket) => {
       if (!match) {
         throw new Error('Match not found');
       }
+      if (socket.userId !== match.player1_id && socket.userId !== match.player2_id) {
+        throw new Error('Access denied: you are not a match participant');
+      }
+      const existingRoom = gameManager.getTournamentRoom(matchId);
+      if (match.status === 'completed') throw new Error('Match is already completed');
+      if (!existingRoom && (match.status !== 'ready' || !match.player1_id || !match.player2_id)) {
+        throw new Error('Match is not ready for a game room');
+      }
 
       // Get player usernames
       const player1 = match.player1;
@@ -644,7 +679,7 @@ io.on('connection', (socket) => {
       );
 
       // Join both players to the socket room
-      io.sockets.sockets.get(socket.id)?.join(`room:${room.id}`);
+      socket.join(room.id);
       
       // Find opponent socket and join them too
       const opponentId = match.player1_id === socket.userId ? match.player2_id : match.player1_id;
@@ -653,13 +688,13 @@ io.on('connection', (socket) => {
       );
       
       if (opponentSocket) {
-        opponentSocket.join(`room:${room.id}`);
+        opponentSocket.join(room.id);
       }
 
       // Emit room created event
       socket.emit('tournament:gameCreated', {
         roomId: room.id,
-        room,
+        room: { id: room.id, status: room.status, players: room.players.map(({ id, username }) => ({ id, username })) },
         matchId,
         tournamentId: match.tournament_id,
       });
@@ -668,7 +703,7 @@ io.on('connection', (socket) => {
       if (opponentSocket) {
         opponentSocket.emit('tournament:gameCreated', {
           roomId: room.id,
-          room,
+          room: { id: room.id, status: room.status, players: room.players.map(({ id, username }) => ({ id, username })) },
           matchId,
           tournamentId: match.tournament_id,
         });
@@ -686,10 +721,27 @@ io.on('connection', (socket) => {
    */
   socket.on('tournament:matchComplete', async ({ matchId, winnerId }) => {
     try {
-      const { roundComplete } = await tournamentManager.recordMatchResult(
+      const submittedMatch = await tournamentManager.getMatch(matchId);
+      if (!submittedMatch || ![submittedMatch.player1_id, submittedMatch.player2_id].includes(socket.userId)) {
+        throw new Error('Access denied: you are not a match participant');
+      }
+      if (![submittedMatch.player1_id, submittedMatch.player2_id].includes(winnerId)) {
+        throw new Error('Winner must be a match participant');
+      }
+      if (submittedMatch.status === 'completed') {
+        if (submittedMatch.winner_id !== winnerId) throw new Error('Match already completed with another winner');
+        socket.emit('tournament:matchCompleted', { matchId, winnerId, round: submittedMatch.round, alreadyCompleted: true });
+        return;
+      }
+      if (!['ready', 'in_progress'].includes(submittedMatch.status)) throw new Error('Match is not ready for completion');
+      const { roundComplete, alreadyCompleted } = await tournamentManager.recordMatchResult(
         matchId,
         winnerId
       );
+      if (alreadyCompleted) {
+        socket.emit('tournament:matchCompleted', { matchId, winnerId, round: submittedMatch.round, alreadyCompleted: true });
+        return;
+      }
 
       // Get updated tournament state
       const match = await tournamentManager.getMatch(matchId);
